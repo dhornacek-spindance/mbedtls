@@ -632,6 +632,92 @@ static void ssl_calc_finished_tls_sha384( mbedtls_ssl_context *, unsigned char *
 #endif
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
+
+#if defined(MBEDTLS_SSL_EXPORT_KEYS)
+static mbedtls_tls_prf_types tls_prf_get_type( mbedtls_ssl_tls_prf_cb *tls_prf )
+{
+#if defined(MBEDTLS_SSL_PROTO_SSL3)
+    if( tls_prf == ssl3_prf )
+    {
+        return( MBEDTLS_SSL_TLS_PRF_SSL3 );
+    }
+    else
+#endif
+#if defined(MBEDTLS_SSL_PROTO_TLS1) || defined(MBEDTLS_SSL_PROTO_TLS1_1)
+    if( tls_prf == tls1_prf )
+    {
+        return( MBEDTLS_SSL_TLS_PRF_TLS1 );
+    }
+    else
+#endif
+#if defined(MBEDTLS_SSL_PROTO_TLS1_2)
+#if defined(MBEDTLS_SHA512_C)
+    if( tls_prf == tls_prf_sha384 )
+    {
+        return( MBEDTLS_SSL_TLS_PRF_SHA384 );
+    }
+    else
+#endif
+#if defined(MBEDTLS_SHA256_C)
+    if( tls_prf == tls_prf_sha256 )
+    {
+        return( MBEDTLS_SSL_TLS_PRF_SHA256 );
+    }
+    else
+#endif
+#endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
+    return( MBEDTLS_SSL_TLS_PRF_NONE );
+}
+#endif /* MBEDTLS_SSL_EXPORT_KEYS */
+
+
+int  mbedtls_ssl_tls_prf( const mbedtls_tls_prf_types prf,
+                          const unsigned char *secret, size_t slen,
+                          const char *label,
+                          const unsigned char *random, size_t rlen,
+                          unsigned char *dstbuf, size_t dlen )
+{
+    mbedtls_ssl_tls_prf_cb *tls_prf = NULL;
+
+    switch( prf )
+    {
+#if defined(MBEDTLS_SSL_PROTO_SSL3)
+        case MBEDTLS_SSL_TLS_PRF_SSL3:
+            tls_prf = ssl3_prf;
+        break;
+#endif /* MBEDTLS_SSL_PROTO_SSL3 */
+#if defined(MBEDTLS_SSL_PROTO_TLS1) || defined(MBEDTLS_SSL_PROTO_TLS1_1)
+        case MBEDTLS_SSL_TLS_PRF_TLS1:
+            tls_prf = tls1_prf;
+        break;
+#endif /* MBEDTLS_SSL_PROTO_TLS1 || MBEDTLS_SSL_PROTO_TLS1_1 */
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_2)
+#if defined(MBEDTLS_SHA512_C)
+        case MBEDTLS_SSL_TLS_PRF_SHA384:
+            tls_prf = tls_prf_sha384;
+        break;
+#endif /* MBEDTLS_SHA512_C */
+#if defined(MBEDTLS_SHA256_C)
+        case MBEDTLS_SSL_TLS_PRF_SHA256:
+            tls_prf = tls_prf_sha256;
+        break;
+#endif /* MBEDTLS_SHA256_C */
+#endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
+    default:
+        return( MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE );
+    }
+
+    return( tls_prf( secret, slen, label, random, rlen, dstbuf, dlen ) );
+}
+
+
+/* Type for the TLS PRF */
+typedef int ssl_tls_prf_t(const unsigned char *, size_t, const char *,
+                          const unsigned char *, size_t,
+                          unsigned char *, size_t);
+
+
 int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
 {
     int ret = 0;
@@ -788,6 +874,31 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
     else
         MBEDTLS_SSL_DEBUG_MSG( 3, ( "no premaster (session resumed)" ) );
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    /* check if we have a chosen srtp protection profile */
+    if ( ssl->dtls_srtp_info.chosen_dtls_srtp_profile != MBEDTLS_SRTP_UNSET_PROFILE )
+    {
+        /* derive key material for srtp session RFC5764 section 4.2
+         * master key and master salt are respectively 128 bits and 112 bits
+         * for all currently available modes:
+         * SRTP_AES128_CM_HMAC_SHA1_80, SRTP_AES128_CM_HMAC_SHA1_32
+         * SRTP_NULL_HMAC_SHA1_80, SRTP_NULL_HMAC_SHA1_32
+         * So we must export 2*(128 + 112) = 480 bits
+         */
+        ssl->dtls_srtp_info.dtls_srtp_keys_len = MBEDTLS_DTLS_SRTP_MAX_KEY_MATERIAL_LENGTH;
+
+        ret = handshake->tls_prf( session->master, 48, "EXTRACTOR-dtls_srtp",
+                                  handshake->randbytes, 64,
+                                  ssl->dtls_srtp_info.dtls_srtp_keys,
+                                  ssl->dtls_srtp_info.dtls_srtp_keys_len );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "dtls srtp prf", ret );
+            return( ret );
+        }
+    }
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
     /*
      * Swap the client and server random values.
      */
@@ -795,7 +906,9 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
     memcpy( handshake->randbytes, tmp + 32, 32 );
     memcpy( handshake->randbytes + 32, tmp, 32 );
     mbedtls_platform_zeroize( tmp, sizeof( tmp ) );
-
+    /**
+     * #YC_TBD, the newer version one uses ssl_populate_transform().#start
+    */
     /*
      *  SSLv3:
      *    key block =
@@ -822,8 +935,11 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
     MBEDTLS_SSL_DEBUG_BUF( 4, "random bytes", handshake->randbytes, 64 );
     MBEDTLS_SSL_DEBUG_BUF( 4, "key block", keyblk, 256 );
 
-    mbedtls_platform_zeroize( handshake->randbytes,
-                              sizeof( handshake->randbytes ) );
+    /**
+     * #YC_TBD, the newer version one uses ssl_populate_transform(). #end
+    */
+    //mbedtls_platform_zeroize( handshake->randbytes,
+    //                          sizeof( handshake->randbytes ) );
 
     /*
      * Determine the appropriate key, IV and MAC length.
@@ -1051,6 +1167,22 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
                                   mac_key_len, transform->keylen,
                                   iv_copy_len );
     }
+    /**#YC_TBD. */
+    if( ssl->conf->f_export_keys_ext != NULL )
+    {
+        ssl->conf->f_export_keys_ext( ssl->conf->p_export_keys,
+                                      session->master, 
+                                      keyblk,
+                                      mac_key_len, 
+                                      transform->keylen,
+                                      iv_copy_len,
+                                      handshake->randbytes + 32,
+                                      handshake->randbytes,
+                                      tls_prf_get_type( ssl->handshake->tls_prf ) );
+    }
+
+    mbedtls_platform_zeroize( handshake->randbytes,
+                              sizeof( handshake->randbytes ) );
 #endif
 
     if( ( ret = mbedtls_cipher_setup( &transform->cipher_ctx_enc,
@@ -5444,9 +5576,21 @@ int mbedtls_ssl_write_certificate( mbedtls_ssl_context *ssl )
         ciphersuite_info->key_exchange == MBEDTLS_KEY_EXCHANGE_ECDHE_PSK ||
         ciphersuite_info->key_exchange == MBEDTLS_KEY_EXCHANGE_ECJPAKE )
     {
-        MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= skip write certificate" ) );
-        ssl->state++;
-        return( 0 );
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+        /* check if we have a chosen srtp protection profile */
+        if( ssl->dtls_srtp_info.chosen_dtls_srtp_profile != MBEDTLS_SRTP_UNSET_PROFILE )
+        {
+            return( MBEDTLS_ERR_SSL_BAD_HS_CERTIFICATE );
+        }
+        else
+        {
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+            MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= skip write certificate" ) );
+            ssl->state++;
+            return( 0 );
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+        }
+#endif
     }
 
 #if defined(MBEDTLS_SSL_CLI_C)
@@ -5757,10 +5901,23 @@ int mbedtls_ssl_parse_certificate( mbedtls_ssl_context *ssl )
 #if defined(MBEDTLS_SSL_SRV_C) && defined(MBEDTLS_SSL_SERVER_NAME_INDICATION)
     const int authmode = ssl->handshake->sni_authmode != MBEDTLS_SSL_VERIFY_UNSET
                        ? ssl->handshake->sni_authmode
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+                       : ssl->dtls_srtp_info.chosen_dtls_srtp_profile !=
+                               MBEDTLS_SRTP_UNSET_PROFILE
+                       && ssl->conf->authmode == MBEDTLS_SSL_VERIFY_NONE
+                       ? MBEDTLS_SSL_VERIFY_OPTIONAL
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
                        : ssl->conf->authmode;
-#else
-    const int authmode = ssl->conf->authmode;
-#endif
+#else /* MBEDTLS_SSL_SRV_C && MBEDTLS_SSL_SERVER_NAME_INDICATION */
+    const int authmode =
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+            ssl->dtls_srtp_info.chosen_dtls_srtp_profile !=
+                                           MBEDTLS_SRTP_UNSET_PROFILE &&
+            ssl->conf->authmode == MBEDTLS_SSL_VERIFY_NONE ?
+            MBEDTLS_SSL_VERIFY_OPTIONAL :
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+            ssl->conf->authmode;
+#endif /* MBEDTLS_SSL_SRV_C && MBEDTLS_SSL_SERVER_NAME_INDICATION */
     void *rs_ctx = NULL;
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> parse certificate" ) );
@@ -7020,6 +7177,10 @@ int mbedtls_ssl_setup( mbedtls_ssl_context *ssl,
 
     ssl_reset_in_out_pointers( ssl );
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    memset( &ssl->dtls_srtp_info, 0, sizeof(ssl->dtls_srtp_info) );
+#endif
+
     if( ( ret = ssl_handshake_init( ssl ) ) != 0 )
         goto error;
 
@@ -7715,6 +7876,125 @@ const char *mbedtls_ssl_get_alpn_protocol( const mbedtls_ssl_context *ssl )
 }
 #endif /* MBEDTLS_SSL_ALPN */
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+static const mbedtls_ssl_srtp_profile_info srtp_profile_definitions[] =
+{
+    { MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80, "MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80" },
+    { MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32, "MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32" },
+    { MBEDTLS_SRTP_NULL_HMAC_SHA1_80, "MBEDTLS_SRTP_NULL_HMAC_SHA1_80" },
+    { MBEDTLS_SRTP_NULL_HMAC_SHA1_32, "MBEDTLS_SRTP_NULL_HMAC_SHA1_32" },
+    { MBEDTLS_SRTP_UNSET_PROFILE, "" }
+};
+
+const mbedtls_ssl_srtp_profile_info *mbedtls_ssl_dtls_srtp_profile_info_from_id( mbedtls_ssl_srtp_profile profile )
+{
+    const mbedtls_ssl_srtp_profile_info *cur = srtp_profile_definitions;
+
+    while( cur->profile != MBEDTLS_SRTP_UNSET_PROFILE )
+    {
+        if( cur->profile == profile )
+            return( cur );
+
+        cur++;
+    }
+
+    return( NULL );
+}
+
+void mbedtls_ssl_conf_srtp_mki_value_supported( mbedtls_ssl_config *conf,
+                                                int support_mki_value )
+{
+    conf->dtls_srtp_mki_support = support_mki_value;
+}
+
+int mbedtls_ssl_dtls_srtp_set_mki_value( mbedtls_ssl_context *ssl,
+                                         unsigned char *mki_value,
+                                         size_t mki_len )
+{
+    if ( mki_len > MBEDTLS_DTLS_SRTP_MAX_MKI_LENGTH )
+    {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+
+    if( ssl->conf->dtls_srtp_mki_support == MBEDTLS_SSL_DTLS_SRTP_MKI_UNSUPPORTED )
+    {
+        return MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
+    }
+
+    memcpy( ssl->dtls_srtp_info.mki_value, mki_value, mki_len );
+    ssl->dtls_srtp_info.mki_len = mki_len;
+    return( 0 );
+}
+
+int mbedtls_ssl_conf_dtls_srtp_protection_profiles( mbedtls_ssl_config *conf,
+                                                    const mbedtls_ssl_srtp_profile *profiles,
+                                                    size_t profiles_number )
+{
+    size_t i;
+    /*
+     * Check input validity : must be a list of profiles from enumeration.
+     * Maximum length is 4 as only 4 protection profiles are defined.
+     */
+    if( profiles_number > 4 )
+    {
+        return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
+    }
+
+    mbedtls_free( conf->dtls_srtp_profile_list );
+    conf->dtls_srtp_profile_list =
+            (mbedtls_ssl_srtp_profile*)mbedtls_calloc(1,
+             profiles_number * sizeof( mbedtls_ssl_srtp_profile ) );
+    if( conf->dtls_srtp_profile_list == NULL )
+        return( MBEDTLS_ERR_SSL_ALLOC_FAILED );
+
+    for( i=0; i < profiles_number; i++ ) {
+        switch( profiles[i] ) {
+            case MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80:
+            case MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32:
+            case MBEDTLS_SRTP_NULL_HMAC_SHA1_80:
+            case MBEDTLS_SRTP_NULL_HMAC_SHA1_32:
+                conf->dtls_srtp_profile_list[i] = profiles[i];
+                break;
+            default:
+                mbedtls_free( conf->dtls_srtp_profile_list );
+                conf->dtls_srtp_profile_list = NULL;
+                conf->dtls_srtp_profile_list_len = 0;
+                return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
+        }
+    }
+
+    /* assign array length */
+    conf->dtls_srtp_profile_list_len = profiles_number;
+
+    return( 0 );
+}
+
+mbedtls_ssl_srtp_profile
+     mbedtls_ssl_get_dtls_srtp_protection_profile( const mbedtls_ssl_context *ssl )
+{
+    return( ssl->dtls_srtp_info.chosen_dtls_srtp_profile );
+}
+
+int mbedtls_ssl_get_dtls_srtp_key_material( const mbedtls_ssl_context *ssl,
+                                            unsigned char *key,
+                                            size_t key_buffer_len,
+                                            size_t *olen )
+{
+
+    /* check output buffer size */
+    if( key_buffer_len < ssl->dtls_srtp_info.dtls_srtp_keys_len )
+    {
+        return( MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL );
+    }
+
+    memcpy( key, ssl->dtls_srtp_info.dtls_srtp_keys,
+            ssl->dtls_srtp_info.dtls_srtp_keys_len );
+    *olen = ssl->dtls_srtp_info.dtls_srtp_keys_len;
+
+    return( 0 );
+}
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
 void mbedtls_ssl_conf_max_version( mbedtls_ssl_config *conf, int major, int minor )
 {
     conf->max_major_ver = major;
@@ -7842,6 +8122,14 @@ void mbedtls_ssl_conf_export_keys_cb( mbedtls_ssl_config *conf,
         void *p_export_keys )
 {
     conf->f_export_keys = f_export_keys;
+    conf->p_export_keys = p_export_keys;
+}
+
+void mbedtls_ssl_conf_export_keys_ext_cb( mbedtls_ssl_config *conf,
+        mbedtls_ssl_export_keys_ext_t *f_export_keys_ext,
+        void *p_export_keys )
+{
+    conf->f_export_keys_ext = f_export_keys_ext;
     conf->p_export_keys = p_export_keys;
 }
 #endif
@@ -9125,6 +9413,11 @@ void mbedtls_ssl_free( mbedtls_ssl_context *ssl )
     mbedtls_free( ssl->cli_id );
 #endif
 
+#if defined (MBEDTLS_SSL_DTLS_SRTP)
+    mbedtls_platform_zeroize( ssl->dtls_srtp_info.dtls_srtp_keys,
+                              ssl->dtls_srtp_info.dtls_srtp_keys_len );
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= free" ) );
 
     /* Actually clear after last debug message */
@@ -9376,6 +9669,10 @@ void mbedtls_ssl_config_free( mbedtls_ssl_config *conf )
 
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
     ssl_key_cert_free( conf->key_cert );
+#endif
+
+#if defined (MBEDTLS_SSL_DTLS_SRTP)
+    mbedtls_free( conf->dtls_srtp_profile_list );
 #endif
 
     mbedtls_platform_zeroize( conf, sizeof( mbedtls_ssl_config ) );

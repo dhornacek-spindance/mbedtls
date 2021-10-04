@@ -692,6 +692,110 @@ static int ssl_parse_alpn_ext( mbedtls_ssl_context *ssl,
 }
 #endif /* MBEDTLS_SSL_ALPN */
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+static int ssl_parse_use_srtp_ext( mbedtls_ssl_context *ssl,
+                                   const unsigned char *buf,
+                                   size_t len )
+{
+    mbedtls_ssl_srtp_profile client_protection = MBEDTLS_SRTP_UNSET_PROFILE;
+    size_t i,j;
+    size_t profile_length;
+    const mbedtls_ssl_srtp_profile_info *profile_info;
+    /*! 2 bytes for profile length and 1 byte for mki len */
+    const size_t size_of_lengths = 3;
+
+    /* If use_srtp is not configured, just ignore the extension */
+    if( ssl->conf->dtls_srtp_profile_list == NULL ||
+        ssl->conf->dtls_srtp_profile_list_len == 0 )
+        return( 0 );
+
+    /* RFC5764 section 4.1.1
+     * uint8 SRTPProtectionProfile[2];
+     *
+     * struct {
+     *   SRTPProtectionProfiles SRTPProtectionProfiles;
+     *   opaque srtp_mki<0..255>;
+     * } UseSRTPData;
+
+     * SRTPProtectionProfile SRTPProtectionProfiles<2..2^16-1>;
+     */
+
+    /*
+     * Min length is 5: at least one protection profile(2 bytes)
+     *                  and length(2 bytes) + srtp_mki length(1 byte)
+     */
+    if( len < size_of_lengths + 2 )
+    {
+        mbedtls_ssl_send_alert_message( ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                        MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE );
+        return( MBEDTLS_ERR_SSL_BAD_HS_CLIENT_HELLO );
+    }
+
+   ssl->dtls_srtp_info.chosen_dtls_srtp_profile = MBEDTLS_SRTP_UNSET_PROFILE;
+
+    /* first 2 bytes are protection profile length(in bytes) */
+    profile_length = ( buf[0] << 8 ) | buf[1];
+
+    if( profile_length > len - size_of_lengths )
+    {
+        mbedtls_ssl_send_alert_message( ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                        MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE );
+        return( MBEDTLS_ERR_SSL_BAD_HS_CLIENT_HELLO );
+    }
+    /*
+     * parse the extension list values are defined in
+     * http://www.iana.org/assignments/srtp-protection/srtp-protection.xhtml
+     */
+    for( j=0; j < profile_length; j += 2 )
+    {
+        /* + 2 to skip the length field */
+        uint16_t protection_profile_value = buf[j + 2] << 8 | buf[j+3];
+        client_protection = mbedtls_ssl_get_srtp_profile_value( protection_profile_value );
+
+        profile_info = mbedtls_ssl_dtls_srtp_profile_info_from_id( client_protection );
+        if( profile_info != NULL )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 3, ( "found srtp profile: %s", profile_info->name ) );
+        }
+        /* check if suggested profile is in our list */
+        for( i = 0; i < ssl->conf->dtls_srtp_profile_list_len; i++)
+        {
+            if( client_protection == ssl->conf->dtls_srtp_profile_list[i] )
+            {
+                ssl->dtls_srtp_info.chosen_dtls_srtp_profile = ssl->conf->dtls_srtp_profile_list[i];
+                MBEDTLS_SSL_DEBUG_MSG( 3, ( "selected srtp profile: %s", profile_info->name ) );
+                break;
+            }
+        }
+        if( ssl->dtls_srtp_info.chosen_dtls_srtp_profile != MBEDTLS_SRTP_UNSET_PROFILE )
+            break;
+    }
+    if( ( ssl->conf->dtls_srtp_mki_support == MBEDTLS_SSL_DTLS_SRTP_MKI_SUPPORTED ) &&
+        ( len > ( profile_length + 2 ) ) )
+    {
+        ssl->dtls_srtp_info.mki_len = buf[profile_length + 2];
+        if( ssl->dtls_srtp_info.mki_len > MBEDTLS_DTLS_SRTP_MAX_MKI_LENGTH ||
+            ssl->dtls_srtp_info.mki_len + profile_length + size_of_lengths != len )
+        {
+            mbedtls_ssl_send_alert_message( ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                            MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE );
+            ssl->dtls_srtp_info.mki_len = 0;
+            return( MBEDTLS_ERR_SSL_BAD_HS_SERVER_HELLO );
+        }
+
+        for( i=0; i < ssl->dtls_srtp_info.mki_len; i++ )
+        {
+            ssl->dtls_srtp_info.mki_value[i] = buf[profile_length + 2 + 1 + i];
+        }
+
+        MBEDTLS_SSL_DEBUG_BUF( 3, "using mki",  ssl->dtls_srtp_info.mki_value,
+                                                ssl->dtls_srtp_info.mki_len );
+    }
+
+     return( 0 );
+}
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
 /*
  * Auxiliary functions for ServerHello parsing and related actions
  */
@@ -1848,6 +1952,15 @@ read_record_header:
                 break;
 #endif /* MBEDTLS_SSL_SESSION_TICKETS */
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+            case MBEDTLS_TLS_EXT_USE_SRTP:
+                MBEDTLS_SSL_DEBUG_MSG( 3, ( "found use_srtp extension" ) );
+                ret = ssl_parse_use_srtp_ext( ssl, ext + 4, ext_size );
+                if ( ret != 0 )
+                    return( ret );
+                break;
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
             default:
                 MBEDTLS_SSL_DEBUG_MSG( 3, ( "unknown extension found: %d (ignoring)",
                                ext_id ) );
@@ -2358,6 +2471,61 @@ static void ssl_write_alpn_ext( mbedtls_ssl_context *ssl,
 }
 #endif /* MBEDTLS_ECDH_C || MBEDTLS_ECDSA_C */
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP ) 
+static void ssl_write_use_srtp_ext( mbedtls_ssl_context *ssl,
+                                    unsigned char *buf,
+                                    size_t *olen )
+{
+    size_t mki_len = 0, ext_len = 0;
+    uint16_t profile_value = 0;
+
+    if( ssl->dtls_srtp_info.chosen_dtls_srtp_profile == MBEDTLS_SRTP_UNSET_PROFILE )
+    {
+        *olen = 0;
+        return;
+    }
+
+    MBEDTLS_SSL_DEBUG_MSG( 3, ( "server hello, adding use_srtp extension" ) );
+
+    if( ssl->conf->dtls_srtp_mki_support == MBEDTLS_SSL_DTLS_SRTP_MKI_SUPPORTED &&
+        ssl->dtls_srtp_info.mki_len != 0 )
+    {
+        mki_len = ssl->dtls_srtp_info.mki_len;
+    }
+
+    /* extension */
+    buf[0] = (unsigned char)( ( MBEDTLS_TLS_EXT_USE_SRTP >> 8 ) & 0xFF );
+    buf[1] = (unsigned char)( ( MBEDTLS_TLS_EXT_USE_SRTP      ) & 0xFF );
+    /*
+     * total length 5 and mki value: only one profile(2 bytes)
+     *              and length(2 bytes) and srtp_mki  )
+     */
+    ext_len = 5 + mki_len;
+    buf[2] = (unsigned char)( ( ext_len >> 8 ) & 0xFF );
+    buf[3] = (unsigned char)( ext_len & 0xFF );
+
+    /* protection profile length: 2 */
+    buf[4] = 0x00;
+    buf[5] = 0x02;
+    profile_value = mbedtls_ssl_get_srtp_profile_iana_value( ssl->dtls_srtp_info.chosen_dtls_srtp_profile );
+    if( profile_value != 0xFFFF )
+    {
+        buf[6] = (unsigned char)( ( profile_value >> 8 ) & 0xFF );
+        buf[7] = (unsigned char)( profile_value & 0xFF );
+    }
+    else
+    {
+        *olen = 0;
+        return;
+    }
+
+    buf[8] = mki_len & 0xFF;
+    memcpy( &buf[9], ssl->dtls_srtp_info.mki_value, mki_len );
+
+    *olen = 9 + mki_len;
+}
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
 #if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
 static int ssl_write_hello_verify_request( mbedtls_ssl_context *ssl )
 {
@@ -2641,6 +2809,11 @@ static int ssl_write_server_hello( mbedtls_ssl_context *ssl )
     ext_len += olen;
 #endif
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    ssl_write_use_srtp_ext( ssl, p + 2 + ext_len, &olen );
+    ext_len += olen;
+#endif
+
     MBEDTLS_SSL_DEBUG_MSG( 3, ( "server hello, total extension length: %d", ext_len ) );
 
     if( ext_len > 0 )
@@ -2714,6 +2887,18 @@ static int ssl_write_certificate_request( mbedtls_ssl_context *ssl )
         authmode = ssl->handshake->sni_authmode;
     else
 #endif
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    /*
+     * check if we have a chosen srtp protection profile,
+     * force verify mode to be at least OPTIONAL
+     */
+    if ( ssl->dtls_srtp_info.chosen_dtls_srtp_profile != MBEDTLS_SRTP_UNSET_PROFILE &&
+         ssl->conf->authmode == MBEDTLS_SSL_VERIFY_NONE )
+    {
+        authmode = MBEDTLS_SSL_VERIFY_OPTIONAL;
+    }
+    else
+#endif
         authmode = ssl->conf->authmode;
 
     if( ciphersuite_info->key_exchange == MBEDTLS_KEY_EXCHANGE_PSK ||
@@ -2723,8 +2908,21 @@ static int ssl_write_certificate_request( mbedtls_ssl_context *ssl )
         ciphersuite_info->key_exchange == MBEDTLS_KEY_EXCHANGE_ECJPAKE ||
         authmode == MBEDTLS_SSL_VERIFY_NONE )
     {
-        MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= skip write certificate request" ) );
-        return( 0 );
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+        /* check if we have a chosen srtp protection profile */
+        if ( ssl->dtls_srtp_info.chosen_dtls_srtp_profile != MBEDTLS_SRTP_UNSET_PROFILE )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 2, ( "should not happen" ) );
+            return( MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE );
+        }
+        else
+        {
+#endif
+            MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= skip write certificate request" ) );
+            return( 0 );
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+        }
+#endif
     }
 
     /*

@@ -184,6 +184,9 @@ int main( void )
 #define DFL_DGRAM_PACKING        1
 #define DFL_EXTENDED_MS         -1
 #define DFL_ETM                 -1
+#define DFL_USE_SRTP            0
+#define DFL_SRTP_FORCE_PROFILE  0
+#define DFL_SRTP_SUPPORT_MKI    0
 
 #define LONG_RESPONSE "<p>01-blah-blah-blah-blah-blah-blah-blah-blah-blah\r\n" \
     "02-blah-blah-blah-blah-blah-blah-blah-blah-blah-blah-blah-blah-blah\r\n"  \
@@ -347,6 +350,20 @@ int main( void )
     "                        records within a single datgram.\n"
 #else
 #define USAGE_DTLS ""
+#endif
+
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+#define USAGE_SRTP \
+    "    use_srtp=%%d         default: 0 (disabled)\n" \
+    "    srtp_force_profile=%%d  default: all enabled\n"   \
+    "                        available profiles:\n"       \
+    "                        1 - SRTP_AES128_CM_HMAC_SHA1_80\n"  \
+    "                        2 - SRTP_AES128_CM_HMAC_SHA1_32\n"  \
+    "                        3 - SRTP_NULL_HMAC_SHA1_80\n"       \
+    "                        4 - SRTP_NULL_HMAC_SHA1_32\n"       \
+    "    support_mki=%%d     default: 0 (not supported)\n"
+#else
+#define USAGE_SRTP ""
 #endif
 
 #if defined(MBEDTLS_SSL_EXTENDED_MASTER_SECRET)
@@ -536,6 +553,9 @@ struct options
     int dtls_mtu;               /* UDP Maximum tranport unit for DTLS       */
     int dgram_packing;          /* allow/forbid datagram packing            */
     int badmac_limit;           /* Limit of records with bad MAC            */
+    int use_srtp;               /* Support SRTP                             */
+    int force_srtp_profile;     /* SRTP protection profile to use or all    */
+    int support_mki;            /* The dtls mki mki support                 */
 } opt;
 
 int query_config( const char *config );
@@ -781,7 +801,8 @@ int sni_callback( void *p_info, mbedtls_ssl_context *ssl,
 
 #endif /* SNI_OPTION */
 
-#if defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED)
+#if defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED) || \
+    defined(MBEDTLS_SSL_DTLS_SRTP)
 
 #define HEX2NUM( c )                        \
     do                                      \
@@ -823,6 +844,9 @@ int unhexify( unsigned char *output, const char *input, size_t *olen )
 
     return( 0 );
 }
+#endif /* MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED || MBEDTLS_SSL_DTLS_SRTP */
+
+#if defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED)
 
 typedef struct _psk_entry psk_entry;
 
@@ -2307,6 +2331,46 @@ int main( int argc, char *argv[] )
         goto exit;
     };
 #endif
+
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    if( opt.use_srtp != DFL_USE_SRTP )
+    {
+        if( opt.force_srtp_profile != DFL_SRTP_FORCE_PROFILE )
+        {
+            const mbedtls_ssl_srtp_profile forced_profile[] = { opt.force_srtp_profile };
+            ret = mbedtls_ssl_conf_dtls_srtp_protection_profiles( &conf,
+                                                                  forced_profile,
+                                                                  sizeof( forced_profile ) / sizeof( mbedtls_ssl_srtp_profile ) );
+        }
+        else
+        {
+            const mbedtls_ssl_srtp_profile default_profiles[] = { MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80,
+                                                                  MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32,
+                                                                  MBEDTLS_SRTP_NULL_HMAC_SHA1_80,
+                                                                  MBEDTLS_SRTP_NULL_HMAC_SHA1_32 };
+            ret = mbedtls_ssl_conf_dtls_srtp_protection_profiles( &conf,
+                                                                  default_profiles,
+                                                                  sizeof( default_profiles ) / sizeof( mbedtls_ssl_srtp_profile ) );
+        }
+
+        if( ret != 0 )
+        {
+            mbedtls_printf( " failed\n  ! mbedtls_ssl_conf_dtls_srtp_protection_profiles returned %d\n\n", ret );
+            goto exit;
+        }
+
+        mbedtls_ssl_conf_srtp_mki_value_supported( &conf,
+                                                   opt.support_mki ?
+                                                   MBEDTLS_SSL_DTLS_SRTP_MKI_SUPPORTED :
+                                                   MBEDTLS_SSL_DTLS_SRTP_MKI_UNSUPPORTED );
+
+    }
+    else if( opt.force_srtp_profile != DFL_SRTP_FORCE_PROFILE )
+    {
+        mbedtls_printf( " failed\n  ! must enable use_srtp to force srtp profile\n\n" );
+        goto exit;
+    }
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
 
 #if defined(MBEDTLS_SSL_TRUNCATED_HMAC)
     if( opt.trunc_hmac != DFL_TRUNC_HMAC )

@@ -1652,6 +1652,20 @@
 #define MBEDTLS_SSL_DTLS_HELLO_VERIFY
 
 /**
+ * \def MBEDTLS_SSL_DTLS_SRTP
+ *
+ * Enable support for DTLS-SRTP, RFC5764, use_srtp extension.
+ * \note Only the dtls-srtp key material negotiation is supported.
+ * Once negotiated, the key should be extracted, and data should be transmitted
+ * via an SRTP stack.
+ *
+ * Requires: MBEDTLS_SSL_PROTO_DTLS
+ *
+ * Uncomment this to enable support for use_srtp extension.
+ */
+#define MBEDTLS_SSL_DTLS_SRTP
+
+/**
  * \def MBEDTLS_SSL_DTLS_CLIENT_PORT_REUSE
  *
  * Enable server-side support for clients that reconnect from the same port.

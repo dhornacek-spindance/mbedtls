@@ -141,6 +141,9 @@ int main( void )
 #define DFL_EXTENDED_MS         -1
 #define DFL_ETM                 -1
 #define DFL_SKIP_CLOSE_NOTIFY   0
+#define DFL_USE_SRTP            0
+#define DFL_SRTP_FORCE_PROFILE  0
+#define DFL_SRTP_MKI            ""
 
 #define GET_REQUEST "GET %s HTTP/1.0\r\nExtra-header: "
 #define GET_REQUEST_END "\r\n\r\n"
@@ -239,6 +242,20 @@ int main( void )
     "                        records within a single datgram.\n"
 #else
 #define USAGE_DTLS ""
+#endif
+
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+#define USAGE_SRTP \
+    "    use_srtp=%%d         default: 0 (disabled)\n" \
+    "    srtp_force_profile=%%d  default: all enabled\n"   \
+    "                        available profiles:\n"       \
+    "                        1 - SRTP_AES128_CM_HMAC_SHA1_80\n"  \
+    "                        2 - SRTP_AES128_CM_HMAC_SHA1_32\n"  \
+    "                        3 - SRTP_NULL_HMAC_SHA1_80\n"       \
+    "                        4 - SRTP_NULL_HMAC_SHA1_32\n"       \
+    "    mki=%%s              default: \"\" (in hex, without 0x)\n"
+#else
+#define USAGE_SRTP ""
 #endif
 
 #if defined(MBEDTLS_SSL_FALLBACK_SCSV)
@@ -409,6 +426,9 @@ struct options
     int extended_ms;            /* negotiate extended master secret?        */
     int etm;                    /* negotiate encrypt then mac?              */
     int skip_close_notify;      /* skip sending the close_notify alert      */
+    int use_srtp;               /* Support SRTP                             */
+    int force_srtp_profile;     /* SRTP protection profile to use or all    */
+    const char *mki;            /* The dtls mki value to use                */
 } opt;
 
 int query_config( const char *config );
@@ -509,6 +529,49 @@ static int ssl_sig_hashes_for_test[] = {
 };
 #endif /* MBEDTLS_X509_CRT_PARSE_C */
 
+#if defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED) || \
+    defined(MBEDTLS_SSL_DTLS_SRTP)
+#define HEX2NUM( c )                    \
+        if( c >= '0' && c <= '9' )      \
+            c -= '0';                   \
+        else if( c >= 'a' && c <= 'f' ) \
+            c -= 'a' - 10;              \
+        else if( c >= 'A' && c <= 'F' ) \
+            c -= 'A' - 10;              \
+        else                            \
+            return( -1 );
+
+/*
+ * Convert a hex string to bytes.
+ * Return 0 on success, -1 on error.
+ */
+int unhexify( unsigned char *output, const char *input,
+              const size_t out_buf_size, size_t *olen )
+{
+    unsigned char c;
+    size_t j;
+
+    *olen = strlen( input );
+    if( *olen % 2 != 0 ||
+        *olen / 2 > out_buf_size )
+        return( -1 );
+    *olen /= 2;
+
+    for( j = 0; j < *olen * 2; j += 2 )
+    {
+        c = input[j];
+        HEX2NUM( c );
+        output[ j / 2 ] = c << 4;
+
+        c = input[j + 1];
+        HEX2NUM( c );
+        output[ j / 2 ] |= c;
+    }
+
+    return( 0 );
+}
+#endif /* MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED || MBEDTLS_SSL_DTLS_SRTP */
+
 /*
  * Wait for an event from the underlying transport or the timer
  * (Used in event-driven IO mode).
@@ -577,6 +640,10 @@ int main( int argc, char *argv[] )
 #if defined(MBEDTLS_ECP_C)
     mbedtls_ecp_group_id curve_list[CURVE_LIST_SIZE];
     const mbedtls_ecp_curve_info *curve_cur;
+#endif
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    unsigned char mki[MBEDTLS_DTLS_SRTP_MAX_MKI_LENGTH];
+    size_t mki_len = 0;
 #endif
 
     const char *pers = "ssl_client2";
@@ -1451,6 +1518,44 @@ int main( int argc, char *argv[] )
     }
 #endif
 
+#if defined(MBEDTLS_SSL_DTLS_SRTP)
+    if( opt.use_srtp != DFL_USE_SRTP )
+    {
+        if( opt.force_srtp_profile != DFL_SRTP_FORCE_PROFILE )
+        {
+            const mbedtls_ssl_srtp_profile forced_profile[] = { opt.force_srtp_profile };
+            ret = mbedtls_ssl_conf_dtls_srtp_protection_profiles
+                    ( &conf,
+                     forced_profile,
+                     sizeof( forced_profile ) / sizeof( mbedtls_ssl_srtp_profile ) );
+        }
+        else
+        {
+            const mbedtls_ssl_srtp_profile default_profiles[] =
+                { MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80,
+                  MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32,
+                  MBEDTLS_SRTP_NULL_HMAC_SHA1_80,
+                  MBEDTLS_SRTP_NULL_HMAC_SHA1_32 };
+            ret = mbedtls_ssl_conf_dtls_srtp_protection_profiles
+                    ( &conf,
+                      default_profiles,
+                      sizeof( default_profiles ) / sizeof( mbedtls_ssl_srtp_profile ) );
+        }
+
+        if( ret != 0 )
+        {
+            mbedtls_printf( " failed\n  ! mbedtls_ssl_conf_dtls_srtp_protection_profiles returned %d\n\n", ret );
+            goto exit;
+        }
+
+    }
+    else if( opt.force_srtp_profile != DFL_SRTP_FORCE_PROFILE )
+    {
+        mbedtls_printf( " failed\n  ! must enable use_srtp to force srtp profile\n\n" );
+        goto exit;
+    }
+#endif /* MBEDTLS_SSL_DTLS_SRTP */
+
 #if defined(MBEDTLS_SSL_TRUNCATED_HMAC)
     if( opt.trunc_hmac != DFL_TRUNC_HMAC )
         mbedtls_ssl_conf_truncated_hmac( &conf, opt.trunc_hmac );
@@ -1611,6 +1716,24 @@ int main( int argc, char *argv[] )
 #if defined(MBEDTLS_ECP_RESTARTABLE)
     if( opt.ec_max_ops != DFL_EC_MAX_OPS )
         mbedtls_ecp_set_max_ops( opt.ec_max_ops );
+#endif
+
+    #if defined(MBEDTLS_SSL_DTLS_SRTP)
+    if( opt.use_srtp != DFL_USE_SRTP &&  strlen( opt.mki ) != 0 )
+    {
+        if( unhexify( mki, opt.mki, sizeof( mki ), &mki_len ) != 0 )
+        {
+            mbedtls_printf( "mki value not valid hex\n" );
+             goto exit;
+        }
+
+        mbedtls_ssl_conf_srtp_mki_value_supported( &conf, MBEDTLS_SSL_DTLS_SRTP_MKI_SUPPORTED );
+        if( ( ret = mbedtls_ssl_dtls_srtp_set_mki_value( &ssl, mki, mki_len ) ) != 0 )
+        {
+            mbedtls_printf( " failed\n  ! mbedtls_ssl_dtls_srtp_set_mki_value returned %d\n\n", ret );
+            goto exit;
+        }
+    }
 #endif
 
     mbedtls_printf( " ok\n" );
