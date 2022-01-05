@@ -1210,6 +1210,7 @@ cleanup:
 #endif /* !defined(MBEDTLS_ECP_NO_FALLBACK) || !defined(MBEDTLS_ECP_NORMALIZE_JAC_ALT) */
 }
 
+#if !defined(MBEDTLS_ECP_MUL_ALT)
 /*
  * Normalize jacobian coordinates of an array of (pointers to) points,
  * using Montgomery's trick to perform only one inversion mod P.
@@ -1333,6 +1334,7 @@ cleanup:
 
     return( ret );
 }
+#endif /* MBEDTLS_ECP_MUL_ALT */
 
 /*
  * Point doubling R = 2 P, Jacobian coordinates
@@ -1533,6 +1535,7 @@ cleanup:
 #endif /* !defined(MBEDTLS_ECP_NO_FALLBACK) || !defined(MBEDTLS_ECP_ADD_MIXED_ALT) */
 }
 
+#if !defined(MBEDTLS_ECP_MUL_ALT)
 /*
  * Randomize jacobian coordinates:
  * (X, Y, Z) -> (l^2 X, l^3 Y, l Z) for random l
@@ -2232,6 +2235,8 @@ cleanup:
     return( ret );
 }
 
+#endif /* MBEDTLS_ECP_MUL_ALT */
+
 #endif /* MBEDTLS_ECP_SHORT_WEIERSTRASS_ENABLED */
 
 #if defined(MBEDTLS_ECP_MONTGOMERY_ENABLED)
@@ -2243,6 +2248,7 @@ cleanup:
  * For scalar multiplication, we'll use a Montgomery ladder.
  */
 
+#if !defined(MBEDTLS_ECP_MUL_ALT)
 /*
  * Normalize Montgomery x/z coordinates: X = X/Z, Z = 1
  * Cost: 1M + 1I
@@ -2441,8 +2447,10 @@ cleanup:
     return( ret );
 }
 
+#endif /* MBEDTLS_ECP_MUL_ALT */
 #endif /* MBEDTLS_ECP_MONTGOMERY_ENABLED */
 
+#if !defined(MBEDTLS_ECP_MUL_ALT)
 /*
  * Restartable multiplication R = m * P
  *
@@ -2453,6 +2461,7 @@ static int ecp_mul_restartable_internal( mbedtls_ecp_group *grp, mbedtls_ecp_poi
              const mbedtls_mpi *m, const mbedtls_ecp_point *P,
              int (*f_rng)(void *, unsigned char *, size_t), void *p_rng,
              mbedtls_ecp_restart_ctx *rs_ctx )
+#endif
 {
     int ret = MBEDTLS_ERR_ECP_BAD_INPUT_DATA;
 #if defined(MBEDTLS_ECP_INTERNAL_ALT)
@@ -2510,13 +2519,22 @@ cleanup:
     return( ret );
 }
 
+#if !defined(MBEDTLS_ECP_MUL_ALT)
 /*
  * Restartable multiplication R = m * P
  */
+
+#if defined(MBEDTLS_ECP_MUL_ALT_SOFT_FALLBACK)
+int mbedtls_ecp_mul_restartable_soft( mbedtls_ecp_group *grp, mbedtls_ecp_point *R,
+             const mbedtls_mpi *m, const mbedtls_ecp_point *P,
+             int (*f_rng)(void *, unsigned char *, size_t), void *p_rng,
+             mbedtls_ecp_restart_ctx *rs_ctx )
+#else
 int mbedtls_ecp_mul_restartable( mbedtls_ecp_group *grp, mbedtls_ecp_point *R,
              const mbedtls_mpi *m, const mbedtls_ecp_point *P,
              int (*f_rng)(void *, unsigned char *, size_t), void *p_rng,
              mbedtls_ecp_restart_ctx *rs_ctx )
+#endif
 {
     ECP_VALIDATE_RET( grp != NULL );
     ECP_VALIDATE_RET( R   != NULL );
@@ -2528,6 +2546,7 @@ int mbedtls_ecp_mul_restartable( mbedtls_ecp_group *grp, mbedtls_ecp_point *R,
 
     return( ecp_mul_restartable_internal( grp, R, m, P, f_rng, p_rng, rs_ctx ) );
 }
+#endif /* MBEDTLS_ECP_MUL_ALT */
 
 /*
  * Multiplication R = m * P
@@ -2543,7 +2562,10 @@ int mbedtls_ecp_mul( mbedtls_ecp_group *grp, mbedtls_ecp_point *R,
     return( mbedtls_ecp_mul_restartable( grp, R, m, P, f_rng, p_rng, NULL ) );
 }
 
+#if !defined(MBEDTLS_ECP_VERIFY_ALT)
+
 #if defined(MBEDTLS_ECP_SHORT_WEIERSTRASS_ENABLED)
+
 /*
  * Check that an affine point is valid as a public key,
  * short weierstrass curves (SEC1 3.2.3.1)
@@ -2592,6 +2614,7 @@ cleanup:
     return( ret );
 }
 #endif /* MBEDTLS_ECP_SHORT_WEIERSTRASS_ENABLED */
+#endif /* MBEDTLS_ECP_VERIFY_ALT */
 
 #if defined(MBEDTLS_ECP_SHORT_WEIERSTRASS_ENABLED)
 /*
@@ -2745,6 +2768,8 @@ int mbedtls_ecp_muladd( mbedtls_ecp_group *grp, mbedtls_ecp_point *R,
 }
 #endif /* MBEDTLS_ECP_SHORT_WEIERSTRASS_ENABLED */
 
+#if !defined(MBEDTLS_ECP_VERIFY_ALT)
+
 #if defined(MBEDTLS_ECP_MONTGOMERY_ENABLED)
 #if defined(MBEDTLS_ECP_DP_CURVE25519_ENABLED)
 #define ECP_MPI_INIT(s, n, p) {s, (n), (mbedtls_mpi_uint *)(p)}
@@ -2858,11 +2883,19 @@ static int ecp_check_pubkey_mx( const mbedtls_ecp_group *grp, const mbedtls_ecp_
 }
 #endif /* MBEDTLS_ECP_MONTGOMERY_ENABLED */
 
+#endif /* MBEDTLS_ECP_VERIFY_ALT */
+
+#if !defined(MBEDTLS_ECP_VERIFY_ALT)
 /*
  * Check that a point is valid as a public key
  */
+#if defined(MBEDTLS_ECP_VERIFY_ALT_SOFT_FALLBACK)
+int mbedtls_ecp_check_pubkey_soft( const mbedtls_ecp_group *grp,
+                              const mbedtls_ecp_point *pt )
+#else
 int mbedtls_ecp_check_pubkey( const mbedtls_ecp_group *grp,
                               const mbedtls_ecp_point *pt )
+#endif
 {
     ECP_VALIDATE_RET( grp != NULL );
     ECP_VALIDATE_RET( pt  != NULL );
@@ -2881,6 +2914,7 @@ int mbedtls_ecp_check_pubkey( const mbedtls_ecp_group *grp,
 #endif
     return( MBEDTLS_ERR_ECP_BAD_INPUT_DATA );
 }
+#endif /* MBEDTLS_ECP_VERIFY_ALT */
 
 /*
  * Check that an mbedtls_mpi is valid as a private key
