@@ -1686,23 +1686,23 @@ cleanup:
 }
 #endif
 
-/*
- * Baseline multiplication: X = A * b
- */
-int mbedtls_mpi_mul_int( mbedtls_mpi *X, const mbedtls_mpi *A, mbedtls_mpi_uint b )
-{
-    mbedtls_mpi _B;
-    mbedtls_mpi_uint p[1];
-    MPI_VALIDATE_RET( X != NULL );
-    MPI_VALIDATE_RET( A != NULL );
+// /*
+//  * Baseline multiplication: X = A * b
+//  */
+// int mbedtls_mpi_mul_int( mbedtls_mpi *X, const mbedtls_mpi *A, mbedtls_mpi_uint b )
+// {
+//     mbedtls_mpi _B;
+//     mbedtls_mpi_uint p[1];
+//     MPI_VALIDATE_RET( X != NULL );
+//     MPI_VALIDATE_RET( A != NULL );
 
-    _B.s = 1;
-    _B.n = 1;
-    _B.p = p;
-    p[0] = b;
+//     _B.s = 1;
+//     _B.n = 1;
+//     _B.p = p;
+//     p[0] = b;
 
-    return( mbedtls_mpi_mul_mpi( X, A, &_B ) );
-}
+//     return( mbedtls_mpi_mul_mpi( X, A, &_B ) );
+// }
 
 /*
  * Unsigned integer divide - double mbedtls_mpi_uint dividend, u1/u0, and

@@ -1171,9 +1171,9 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
     if( ssl->conf->f_export_keys_ext != NULL )
     {
         ssl->conf->f_export_keys_ext( ssl->conf->p_export_keys,
-                                      session->master, 
+                                      session->master,
                                       keyblk,
-                                      mac_key_len, 
+                                      mac_key_len,
                                       transform->keylen,
                                       iv_copy_len,
                                       handshake->randbytes + 32,
@@ -6935,6 +6935,19 @@ static void ssl_transform_init( mbedtls_ssl_transform *transform )
 
     mbedtls_md_init( &transform->md_ctx_enc );
     mbedtls_md_init( &transform->md_ctx_dec );
+}
+
+void mbedtls_ssl_transform_init( mbedtls_ssl_transform *transform )
+{
+    memset( transform, 0, sizeof(mbedtls_ssl_transform) );
+
+    mbedtls_cipher_init( &transform->cipher_ctx_enc );
+    mbedtls_cipher_init( &transform->cipher_ctx_dec );
+
+#if defined(MBEDTLS_SSL_SOME_MODES_USE_MAC)
+    mbedtls_md_init( &transform->md_ctx_enc );
+    mbedtls_md_init( &transform->md_ctx_dec );
+#endif
 }
 
 void mbedtls_ssl_session_init( mbedtls_ssl_session *session )

@@ -469,6 +469,8 @@ struct mbedtls_ssl_handshake_params
 #endif
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
+    mbedtls_ssl_ciphersuite_t const *ciphersuite_info;
+
     void (*update_checksum)(mbedtls_ssl_context *, const unsigned char *, size_t);
     void (*calc_verify)(mbedtls_ssl_context *, unsigned char *);
     void (*calc_finished)(mbedtls_ssl_context *, unsigned char *, int);
@@ -838,6 +840,24 @@ void mbedtls_ssl_write_version( int major, int minor, int transport,
 void mbedtls_ssl_read_version( int *major, int *minor, int transport,
                        const unsigned char ver[2] );
 
+static inline size_t mbedtls_ssl_in_hdr_len( const mbedtls_ssl_context *ssl )
+{
+#if !defined(MBEDTLS_SSL_PROTO_DTLS)
+    ((void) ssl);
+#endif
+
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+    if( ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM )
+    {
+        return( 13 );
+    }
+    else
+#endif /* MBEDTLS_SSL_PROTO_DTLS */
+    {
+        return( 5 );
+    }
+}
+
 static inline size_t mbedtls_ssl_hdr_len( const mbedtls_ssl_context *ssl )
 {
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
@@ -980,5 +1000,7 @@ void mbedtls_ssl_cf_memcpy_offset( unsigned char *dst,
 #ifdef __cplusplus
 }
 #endif
+
+void mbedtls_ssl_transform_init( mbedtls_ssl_transform *transform );
 
 #endif /* ssl_internal.h */
